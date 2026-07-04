@@ -1,0 +1,203 @@
+{
+  "entities": {
+    "admin": {
+      "title": "Admin",
+      "description": "System administrator user record for Bek Mebeli",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "description": "Email address of the administrator"
+        },
+        "assignedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when this admin was created"
+        },
+        "assignedBy": {
+          "type": "string",
+          "description": "Email of the admin who created this admin"
+        }
+      },
+      "required": ["email", "assignedAt"]
+    },
+    "booking": {
+      "title": "Booking",
+      "description": "Furniture order or consultation request from a client",
+      "type": "object",
+      "properties": {
+        "fullName": {
+          "type": "string",
+          "description": "Full name of the customer"
+        },
+        "phone": {
+          "type": "string",
+          "description": "formatted phone number of the customer"
+        },
+        "category": {
+          "type": "string",
+          "description": "Selected category of furniture"
+        },
+        "message": {
+          "type": "string",
+          "description": "Optional notes or dimensions from the customer"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["yangi", "aloqada", "kelishildi", "yakunlandi", "bekor_qilindi"],
+          "description": "Current processing status"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update timestamp"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Optional UID if the user was authenticated"
+        },
+        "adminNote": {
+          "type": "string",
+          "description": "Private administrative notes about the order"
+        }
+      },
+      "required": ["fullName", "phone", "category", "status", "createdAt", "updatedAt"]
+    },
+    "category": {
+      "title": "Category",
+      "description": "Dynamic mebel category specifications managed by admin",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "Category heading"
+        },
+        "description": {
+          "type": "string",
+          "description": "Short category pitch"
+        },
+        "image": {
+          "type": "string",
+          "description": "Unsplash image URL for display"
+        },
+        "details": {
+          "type": "string",
+          "description": "Detailed explanation of what the package offers"
+        },
+        "items": {
+          "type": "array",
+          "description": "List of inclusions in the package"
+        },
+        "material": {
+          "type": "string",
+          "description": "Description of building materials used"
+        },
+        "guarantee": {
+          "type": "string",
+          "description": "Years of guarantee"
+        },
+        "duration": {
+          "type": "string",
+          "description": "Production duration in business days"
+        }
+      },
+      "required": ["title", "description", "image", "details", "items", "material", "guarantee", "duration"]
+    },
+    "testimonial": {
+      "title": "Testimonial",
+      "description": "Customer feedback and reviews shown on the page",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Full name of the client"
+        },
+        "role": {
+          "type": "string",
+          "description": "Client location or role"
+        },
+        "comment": {
+          "type": "string",
+          "description": "Text review from the client"
+        },
+        "rating": {
+          "type": "number",
+          "description": "Rating score out of 5 stars"
+        },
+        "date": {
+          "type": "string",
+          "description": "Date of feedback"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp"
+        }
+      },
+      "required": ["name", "role", "comment", "rating", "date"]
+    },
+    "setting": {
+      "title": "Setting",
+      "description": "Global configuration and contact details for the landing page",
+      "type": "object",
+      "properties": {
+        "phones": {
+          "type": "array",
+          "description": "Contact phone list"
+        },
+        "email": {
+          "type": "string",
+          "description": "Support email address"
+        },
+        "address": {
+          "type": "string",
+          "description": "HQ office or workshop address"
+        },
+        "workingHours": {
+          "type": "string",
+          "description": "Weekly working times"
+        },
+        "instagram": {
+          "type": "string",
+          "description": "Instagram link"
+        },
+        "telegram": {
+          "type": "string",
+          "description": "Telegram chat or handle link"
+        },
+        "mapsLink": {
+          "type": "string",
+          "description": "Google maps route link"
+        }
+      },
+      "required": ["phones", "email", "address", "workingHours", "instagram", "telegram", "mapsLink"]
+    }
+  },
+  "firestore": {
+    "/admins/{userId}": {
+      "schema": "admin",
+      "description": "Registry of authenticated system admins"
+    },
+    "/bookings/{bookingId}": {
+      "schema": "booking",
+      "description": "List of customer reservation submissions"
+    },
+    "/categories/{categoryId}": {
+      "schema": "category",
+      "description": "List of editable mebel categories"
+    },
+    "/testimonials/{testimonialId}": {
+      "schema": "testimonial",
+      "description": "Client reviews moderateable by admins"
+    },
+    "/settings/{settingId}": {
+      "schema": "setting",
+      "description": "Global config and contact settings for the app"
+    }
+  }
+}

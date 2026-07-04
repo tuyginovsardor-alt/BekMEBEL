@@ -1,0 +1,168 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 1. Global Safety Net - Default Deny Catch-All
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- REUSABLE PRIMITIVE HELPERS ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        (request.auth.token.email == "tuyginovsardor@gmail.com" && request.auth.token.email_verified == true)
+      );
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- VALIDATION BLUEPRINTS ---
+    
+    function isValidAdmin(data) {
+      return data.keys().hasAll(['email', 'assignedAt'])
+        && data.keys().size() <= 3
+        && data.email is string && data.email.size() <= 150
+        && (!('assignedBy' in data) || (data.assignedBy is string && data.assignedBy.size() <= 150));
+    }
+
+    function isValidBooking(data) {
+      return data.keys().hasAll(['fullName', 'phone', 'category', 'status', 'createdAt', 'updatedAt'])
+        && data.fullName is string && data.fullName.size() >= 2 && data.fullName.size() <= 100
+        && data.phone is string && data.phone.size() >= 9 && data.phone.size() <= 30
+        && data.category is string && data.category.size() >= 2 && data.category.size() <= 100
+        && data.status in ['yangi', 'aloqada', 'kelishildi', 'yakunlandi', 'bekor_qilindi']
+        && (!('message' in data) || (data.message is string && data.message.size() <= 1500))
+        && (!('userId' in data) || (data.userId is string && data.userId.size() <= 128))
+        && (!('adminNote' in data) || (data.adminNote is string && data.adminNote.size() <= 2000));
+    }
+
+    function isValidCategory(data) {
+      return data.keys().hasAll(['title', 'description', 'image', 'details', 'items', 'material', 'guarantee', 'duration'])
+        && data.title is string && data.title.size() <= 100
+        && data.description is string && data.description.size() <= 500
+        && data.image is string && data.image.size() <= 1000
+        && data.details is string && data.details.size() <= 2000
+        && data.items is list && data.items.size() <= 20
+        && (data.items.size() == 0 || data.items[0] is string)
+        && data.material is string && data.material.size() <= 500
+        && data.guarantee is string && data.guarantee.size() <= 50
+        && data.duration is string && data.duration.size() <= 50;
+    }
+
+    function isValidTestimonial(data) {
+      return data.keys().hasAll(['name', 'role', 'comment', 'rating', 'date'])
+        && data.name is string && data.name.size() <= 100
+        && data.role is string && data.role.size() <= 100
+        && data.comment is string && data.comment.size() <= 1000
+        && data.rating is number && data.rating >= 1 && data.rating <= 5
+        && data.date is string && data.date.size() <= 50
+        && (!('createdAt' in data) || data.createdAt is timestamp);
+    }
+
+    function isValidSetting(data) {
+      return data.keys().hasAll(['phones', 'email', 'address', 'workingHours', 'instagram', 'telegram', 'mapsLink'])
+        && data.phones is list && data.phones.size() <= 10
+        && (data.phones.size() == 0 || data.phones[0] is string)
+        && data.email is string && data.email.size() <= 100
+        && data.address is string && data.address.size() <= 500
+        && data.workingHours is string && data.workingHours.size() <= 150
+        && data.instagram is string && data.instagram.size() <= 250
+        && data.telegram is string && data.telegram.size() <= 250
+        && data.mapsLink is string && data.mapsLink.size() <= 1000;
+    }
+
+    // --- COLLECTION RULES ---
+
+    // 1. ADMINS COLLECTION
+    match /admins/{userId} {
+      allow read: if isAdmin();
+      allow create: if isAdmin() && isValidAdmin(incoming()) && isValidId(userId);
+      allow update: if isAdmin() && isValidAdmin(incoming()) 
+                     && incoming().email == existing().email; // Immutable Email
+      allow delete: if isAdmin() && userId != request.auth.uid; // Prevent deleting oneself
+    }
+
+    // 2. BOOKINGS COLLECTION
+    match /bookings/{bookingId} {
+      // Admins can see all bookings. Users can only see their own bookings.
+      allow read, list: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow get: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      
+      // Anyone can create a booking.
+      allow create: if isValidBooking(incoming()) 
+                    && isValidId(bookingId)
+                    && incoming().status == 'yangi'
+                    && incoming().createdAt == request.time
+                    && incoming().updatedAt == request.time
+                    && (!('userId' in incoming()) || (isSignedIn() && incoming().userId == request.auth.uid))
+                    && (!('adminNote' in incoming())); // Standard users cannot set adminNote initially
+
+      // TIERED IDENTITY LOGIC FOR UPDATE
+      allow update: if (
+        // Tier 1: Admin can update anything valid
+        (isAdmin() && isValidBooking(incoming()) && incoming().createdAt == existing().createdAt && incoming().updatedAt == request.time) ||
+        
+        // Tier 2: Customer can cancel or update their own pending booking
+        (
+          isSignedIn() 
+          && resource.data.userId == request.auth.uid 
+          && isValidBooking(incoming())
+          && incoming().userId == existing().userId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && !('adminNote' in incoming().diff(existing()).affectedKeys()) // Cannot change adminNote
+          && (
+            // Customer is changing status to 'bekor_qilindi' or updating their custom message
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']) && incoming().status == 'bekor_qilindi'
+            || incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'phone', 'category', 'message', 'updatedAt'])
+          )
+        )
+      );
+
+      // Only Admin or the booking owner can delete (if in yangi/bekor_qilindi state)
+      allow delete: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid && (resource.data.status == 'yangi' || resource.data.status == 'bekor_qilindi'));
+    }
+
+    // 3. CATEGORIES COLLECTION
+    match /categories/{categoryId} {
+      allow read: if true;
+      allow create: if isAdmin() && isValidCategory(incoming()) && isValidId(categoryId);
+      allow update: if isAdmin() && isValidCategory(incoming());
+      allow delete: if isAdmin();
+    }
+
+    // 4. TESTIMONIALS COLLECTION
+    match /testimonials/{testimonialId} {
+      allow read: if true;
+      // Anyone can submit a review but admins can delete or edit
+      allow create: if isValidTestimonial(incoming()) && isValidId(testimonialId);
+      allow update, delete: if isAdmin();
+    }
+
+    // 5. SETTINGS COLLECTION
+    match /settings/{settingId} {
+      allow read: if true;
+      allow create, update: if isAdmin() && isValidSetting(incoming()) && isValidId(settingId);
+      allow delete: if isAdmin();
+    }
+  }
+}

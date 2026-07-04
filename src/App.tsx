@@ -17,11 +17,35 @@ import {
   ArrowRight, 
   Sparkles, 
   ShieldCheck, 
-  Heart 
+  Heart,
+  LogIn,
+  LogOut,
+  User as UserIcon,
+  Settings,
+  Database,
+  History,
+  Lock
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { FURNITURE_CATEGORIES, ADVANTAGES, TESTIMONIALS, CONTACT_INFO } from './data';
-import { FurnitureCategory, OrderFormData } from './types';
+import { FurnitureCategory, OrderFormData, Booking, AdminUser, ContactSettings, Testimonial } from './types';
+import { 
+  collection, 
+  doc, 
+  getDocs, 
+  getDoc, 
+  setDoc, 
+  updateDoc, 
+  deleteDoc, 
+  onSnapshot, 
+  serverTimestamp, 
+  query, 
+  orderBy, 
+  where 
+} from 'firebase/firestore';
+import { onAuthStateChanged, User } from 'firebase/auth';
+import { auth, db, loginWithGoogle, logoutUser, OperationType, handleFirestoreError } from './firebase';
+import AdminPanel from './components/AdminPanel';
 
 export default function App() {
   // Mobile menu state
@@ -46,6 +70,205 @@ export default function App() {
 
   // Active section for navigation highlight
   const [activeSection, setActiveSection] = useState('home');
+
+  // --- FIREBASE DYNAMIC STATES ---
+  const [categories, setCategories] = useState<FurnitureCategory[]>(FURNITURE_CATEGORIES);
+  const [testimonials, setTestimonials] = useState<Testimonial[]>(TESTIMONIALS);
+  const [settings, setSettings] = useState<ContactSettings>(CONTACT_INFO);
+  
+  // Admins & Bookings (Real-time syncing for admin view)
+  const [bookings, setBookings] = useState<Booking[]>([]);
+  const [admins, setAdmins] = useState<AdminUser[]>([]);
+
+  // Auth & Admin state
+  const [user, setUser] = useState<User | null>(null);
+  const [isAdminUser, setIsAdminUser] = useState(false);
+  const [showAdminPanel, setShowAdminPanel] = useState(false);
+  const [userBookings, setUserBookings] = useState<Booking[]>([]);
+
+  // Loading state for initial fetch
+  const [isLoading, setIsLoading] = useState(true);
+
+  // --- FETCH & SYNC DATA ---
+  const refreshAllData = async () => {
+    try {
+      // 1. Fetch Categories
+      const catSnap = await getDocs(collection(db, 'categories'));
+      if (!catSnap.empty) {
+        const cats: FurnitureCategory[] = [];
+        catSnap.forEach(doc => {
+          cats.push({ id: doc.id, ...doc.data() } as any);
+        });
+        setCategories(cats);
+      } else {
+        setCategories(FURNITURE_CATEGORIES);
+      }
+
+      // 2. Fetch Testimonials
+      const testSnap = await getDocs(collection(db, 'testimonials'));
+      if (!testSnap.empty) {
+        const tests: Testimonial[] = [];
+        testSnap.forEach(doc => {
+          tests.push({ id: doc.id, ...doc.data() } as any);
+        });
+        setTestimonials(tests);
+      } else {
+        setTestimonials(TESTIMONIALS);
+      }
+
+      // 3. Fetch settings
+      const setDocRef = await getDoc(doc(db, 'settings', 'contact_info'));
+      if (setDocRef.exists()) {
+        setSettings(setDocRef.data() as ContactSettings);
+      } else {
+        setSettings(CONTACT_INFO);
+      }
+    } catch (e) {
+      console.error("Failed to load custom collections, using static fallback:", e);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Auth state listener
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      setUser(currentUser);
+      if (currentUser) {
+        // User is logged in. Determine if they are admin
+        const primaryAdmin = currentUser.email === "tuyginovsardor@gmail.com";
+        let inAdminsCol = false;
+        try {
+          const adminDoc = await getDoc(doc(db, 'admins', currentUser.uid));
+          if (adminDoc.exists()) {
+            inAdminsCol = true;
+          }
+        } catch (e) {
+          console.error("Admin check error:", e);
+        }
+
+        const isAdmin = primaryAdmin || inAdminsCol;
+        setIsAdminUser(isAdmin);
+
+        // Bootstrap Admin record in db if primary admin logs in for the first time
+        if (primaryAdmin && !inAdminsCol) {
+          try {
+            await setDoc(doc(db, 'admins', currentUser.uid), {
+              email: currentUser.email,
+              assignedAt: serverTimestamp(),
+              assignedBy: 'System Bootstrap'
+            });
+          } catch (err) {
+            console.error("Auto bootstrap admin entry failed:", err);
+          }
+        }
+      } else {
+        setIsAdminUser(false);
+        setShowAdminPanel(false);
+        setUserBookings([]);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Sync general collections on mount
+  useEffect(() => {
+    refreshAllData();
+  }, []);
+
+  // Sync Admin data (bookings, all admins) when authenticated as admin
+  useEffect(() => {
+    if (!isAdminUser || !user) {
+      setBookings([]);
+      setAdmins([]);
+      return;
+    }
+
+    // Real-time listener for bookings
+    const unsubBookings = onSnapshot(collection(db, 'bookings'), (snapshot) => {
+      const bList: Booking[] = [];
+      snapshot.forEach(doc => {
+        bList.push({ id: doc.id, ...doc.data() } as any);
+      });
+      // Sort by creation time descending
+      bList.sort((a, b) => {
+        const timeA = a.createdAt?.seconds || 0;
+        const timeB = b.createdAt?.seconds || 0;
+        return timeB - timeA;
+      });
+      setBookings(bList);
+    });
+
+    // Real-time listener for admins list
+    const unsubAdmins = onSnapshot(collection(db, 'admins'), (snapshot) => {
+      const aList: AdminUser[] = [];
+      snapshot.forEach(doc => {
+        aList.push({ id: doc.id, ...doc.data() } as any);
+      });
+      setAdmins(aList);
+    });
+
+    return () => {
+      unsubBookings();
+      unsubAdmins();
+    };
+  }, [isAdminUser, user]);
+
+  // Sync logged in user's bookings (Client View)
+  useEffect(() => {
+    if (!user || isAdminUser) {
+      setUserBookings([]);
+      return;
+    }
+
+    // Get client's own bookings
+    const unsubUserBookings = onSnapshot(collection(db, 'bookings'), (snapshot) => {
+      const uList: Booking[] = [];
+      snapshot.forEach(doc => {
+        const b = doc.data() as Booking;
+        if (b.userId === user.uid) {
+          uList.push({ id: doc.id, ...b });
+        }
+      });
+      uList.sort((a, b) => {
+        const timeA = a.createdAt?.seconds || 0;
+        const timeB = b.createdAt?.seconds || 0;
+        return timeB - timeA;
+      });
+      setUserBookings(uList);
+    });
+
+    return () => unsubUserBookings();
+  }, [user, isAdminUser]);
+
+  // DATABASE SEEDING PROCESS
+  const seedDatabase = async () => {
+    try {
+      // 1. Seed Categories
+      for (const cat of FURNITURE_CATEGORIES) {
+        await setDoc(doc(db, 'categories', cat.id), cat);
+      }
+      // 2. Seed settings
+      await setDoc(doc(db, 'settings', 'contact_info'), CONTACT_INFO);
+      // 3. Seed testimonials
+      for (const test of TESTIMONIALS) {
+        const id = String(test.id);
+        await setDoc(doc(db, 'testimonials', id), {
+          name: test.name,
+          role: test.role,
+          comment: test.comment,
+          rating: test.rating,
+          date: test.date,
+          createdAt: serverTimestamp()
+        });
+      }
+      alert("Ma'lumotlar bazasi boshlang'ich ma'lumotlar bilan muvaffaqiyatli to'ldirildi!");
+      await refreshAllData();
+    } catch (err) {
+      console.error("Seeding error:", err);
+      alert("Xatolik yuz berdi: " + (err instanceof Error ? err.message : String(err)));
+    }
+  };
 
   useEffect(() => {
     const handleScroll = () => {
@@ -117,7 +340,8 @@ export default function App() {
     });
   };
 
-  const handleFormSubmit = (e: React.FormEvent) => {
+  // SUBMIT ORDER TO FIRESTORE
+  const handleFormSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
     // Simple validation
@@ -134,8 +358,28 @@ export default function App() {
       return;
     }
 
-    // Process submission (simulated)
-    setIsSubmitted(true);
+    try {
+      const bookingRef = doc(collection(db, 'bookings'));
+      const newBooking: Partial<Booking> = {
+        fullName: formData.fullName.trim(),
+        phone: formData.phone.trim(),
+        category: formData.category,
+        message: formData.message.trim(),
+        status: 'yangi',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      };
+
+      if (user) {
+        newBooking.userId = user.uid;
+      }
+
+      await setDoc(bookingRef, newBooking);
+      setIsSubmitted(true);
+    } catch (err) {
+      console.error("Booking error:", err);
+      alert("Xatolik yuz berdi: " + (err instanceof Error ? err.message : String(err)));
+    }
   };
 
   const handleOrderCategorySelection = (categoryTitle: string) => {
@@ -189,10 +433,15 @@ export default function App() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center justify-between">
           
           {/* Logo */}
-          <a href="#home" className="flex items-center space-x-2 group">
-            <span className="w-10 h-10 rounded-lg bg-gold-500 flex items-center justify-center font-display font-bold text-white text-xl shadow-lg shadow-gold-500/20 group-hover:scale-105 transition-transform duration-300">
-              B
-            </span>
+          <a href="#home" className="flex items-center space-x-3 group">
+            <div className="w-10 h-10 rounded-lg overflow-hidden shadow-lg shadow-gold-500/20 group-hover:scale-105 transition-transform duration-300 bg-slate-900 flex items-center justify-center border border-slate-800">
+              <img 
+                src="https://i.ibb.co/JWWDn91S/bekmebellogotip.jpg" 
+                alt="Bek Mebeli Logotip" 
+                className="w-full h-full object-cover"
+                referrerPolicy="no-referrer"
+              />
+            </div>
             <div className="flex flex-col">
               <span className="font-display font-bold text-xl tracking-wide group-hover:text-gold-300 transition-colors duration-300">
                 BEK MEBELI
@@ -204,7 +453,7 @@ export default function App() {
           </a>
 
           {/* Desktop Navigation */}
-          <nav className="hidden md:flex items-center space-x-8">
+          <nav className="hidden md:flex items-center space-x-6">
             {[
               { id: 'catalog', label: 'Katalog' },
               { id: 'advantages', label: 'Afzalliklarimiz' },
@@ -231,11 +480,52 @@ export default function App() {
             ))}
           </nav>
 
-          {/* CTA Phone Button */}
+          {/* User auth and Admin Access Panel */}
           <div className="hidden md:flex items-center space-x-4">
+            
+            <AnimatePresence mode="wait">
+              {user ? (
+                <div className="flex items-center space-x-3 bg-slate-950/80 border border-slate-800 rounded-full px-4 py-1.5 backdrop-blur-sm">
+                  <div className="w-7 h-7 rounded-full bg-gold-500 flex items-center justify-center font-bold text-slate-950 text-xs">
+                    {user.email ? user.email.charAt(0).toUpperCase() : 'U'}
+                  </div>
+                  <div className="flex flex-col text-left">
+                    <span className="text-[10px] font-semibold text-slate-200 line-clamp-1 max-w-[120px]">{user.email}</span>
+                    {isAdminUser && <span className="text-[9px] text-gold-400 font-mono -mt-0.5">Admin</span>}
+                  </div>
+
+                  {isAdminUser && (
+                    <button 
+                      onClick={() => setShowAdminPanel(true)}
+                      className="bg-gold-500 hover:bg-gold-400 text-slate-950 text-[10px] font-bold px-3 py-1 rounded-full transition-colors cursor-pointer flex items-center space-x-1"
+                    >
+                      <Lock className="w-3 h-3 text-slate-950 inline" />
+                      <span>Admin Panel</span>
+                    </button>
+                  )}
+
+                  <button 
+                    onClick={logoutUser}
+                    className="p-1 text-rose-400 hover:text-rose-300 transition-colors cursor-pointer"
+                    title="Chiqish"
+                  >
+                    <LogOut className="w-4 h-4" />
+                  </button>
+                </div>
+              ) : (
+                <button 
+                  onClick={loginWithGoogle}
+                  className="flex items-center space-x-2 bg-slate-950/80 hover:bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-200 font-semibold px-4 py-2 rounded-full text-xs transition-all cursor-pointer backdrop-blur-sm"
+                >
+                  <LogIn className="w-3.5 h-3.5 text-gold-400" />
+                  <span>Kirish (Google)</span>
+                </button>
+              )}
+            </AnimatePresence>
+
             <a 
-              href={`tel:${CONTACT_INFO.phones[0].replace(/\s+/g, '')}`} 
-              className="flex items-center space-x-2 bg-gradient-to-r from-gold-600 to-gold-500 hover:from-gold-500 hover:to-gold-400 text-white font-medium px-5 py-2.5 rounded-full text-sm shadow-md shadow-gold-600/10 hover:shadow-gold-500/20 hover:-translate-y-0.5 transition-all duration-300"
+              href={`tel:${settings.phones[0].replace(/\s+/g, '')}`} 
+              className="flex items-center space-x-2 bg-gradient-to-r from-gold-600 to-gold-500 hover:from-gold-500 hover:to-gold-400 text-white font-medium px-5 py-2.5 rounded-full text-xs shadow-md shadow-gold-600/10 hover:shadow-gold-500/20 hover:-translate-y-0.5 transition-all duration-300"
             >
               <Phone className="w-4 h-4 text-white" />
               <span>Qo'ng'iroq qilish</span>
@@ -262,7 +552,7 @@ export default function App() {
               transition={{ duration: 0.3 }}
               className="md:hidden bg-slate-950 border-t border-slate-800 overflow-hidden"
             >
-              <div className="px-4 pt-4 pb-6 space-y-4">
+              <div className="px-4 pt-4 pb-6 space-y-4 text-left">
                 {[
                   { id: 'catalog', label: 'Katalog' },
                   { id: 'advantages', label: 'Afzalliklarimiz' },
@@ -279,17 +569,68 @@ export default function App() {
                   </a>
                 ))}
                 
+                {/* Mobile Auth */}
+                <div className="pt-2 border-b border-slate-900 pb-4">
+                  {user ? (
+                    <div className="flex flex-col space-y-3">
+                      <div className="flex items-center space-x-3 text-white">
+                        <div className="w-8 h-8 rounded-full bg-gold-500 flex items-center justify-center font-bold text-slate-950 text-xs">
+                          {user.email ? user.email.charAt(0).toUpperCase() : 'U'}
+                        </div>
+                        <div className="flex flex-col text-left">
+                          <span className="text-xs font-semibold text-slate-200">{user.email}</span>
+                          {isAdminUser && <span className="text-[10px] text-gold-400 font-mono">Tizim Administratori</span>}
+                        </div>
+                      </div>
+                      
+                      {isAdminUser && (
+                        <button 
+                          onClick={() => {
+                            setIsMobileMenuOpen(false);
+                            setShowAdminPanel(true);
+                          }}
+                          className="w-full bg-gold-500 hover:bg-gold-600 text-slate-950 font-semibold py-2.5 rounded-xl text-xs flex items-center justify-center space-x-2"
+                        >
+                          <Lock className="w-4 h-4 text-slate-950" />
+                          <span>Admin Panel</span>
+                        </button>
+                      )}
+
+                      <button 
+                        onClick={() => {
+                          logoutUser();
+                          setIsMobileMenuOpen(false);
+                        }}
+                        className="w-full bg-slate-900 text-rose-400 font-medium py-2.5 rounded-xl text-xs border border-slate-800"
+                      >
+                        Chiqish
+                      </button>
+                    </div>
+                  ) : (
+                    <button 
+                      onClick={() => {
+                        loginWithGoogle();
+                        setIsMobileMenuOpen(false);
+                      }}
+                      className="w-full bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-200 font-semibold py-2.5 rounded-xl text-xs flex items-center justify-center space-x-2"
+                    >
+                      <LogIn className="w-4 h-4 text-gold-400" />
+                      <span>Google orqali kirish</span>
+                    </button>
+                  )}
+                </div>
+
                 <div className="pt-2 flex flex-col space-y-3">
                   <div className="flex items-center text-slate-400 text-sm py-1">
                     <Clock className="w-4 h-4 mr-2 text-gold-500" />
-                    <span>{CONTACT_INFO.workingHours}</span>
+                    <span>{settings.workingHours}</span>
                   </div>
                   <a 
-                    href={`tel:${CONTACT_INFO.phones[0].replace(/\s+/g, '')}`} 
+                    href={`tel:${settings.phones[0].replace(/\s+/g, '')}`} 
                     className="flex items-center justify-center space-x-2 bg-gold-500 hover:bg-gold-600 text-white font-semibold py-3 rounded-xl shadow-lg transition-colors"
                   >
                     <Phone className="w-5 h-5 text-white" />
-                    <span>{CONTACT_INFO.phones[0]}</span>
+                    <span>{settings.phones[0]}</span>
                   </a>
                 </div>
               </div>
@@ -305,7 +646,7 @@ export default function App() {
           <img 
             src="https://images.unsplash.com/photo-1618221195710-dd6b41faaea6?auto=format&fit=crop&w=1600&q=80" 
             alt="Bek Mebeli Premium Interior" 
-            className="w-full h-full object-cover object-center opacity-40 scale-105 animate-subtle-zoom"
+            className="w-full h-full object-cover object-center opacity-40 scale-105"
           />
           <div className="absolute inset-0 bg-gradient-to-r from-slate-950 via-slate-900/80 to-slate-950/40" />
           <div className="absolute inset-0 bg-gradient-to-t from-[#FDFDFD] via-transparent to-transparent opacity-95" />
@@ -316,7 +657,7 @@ export default function App() {
         <div className="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 text-center md:text-left">
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-12 items-center">
             
-            <div className="lg:col-span-8 flex flex-col items-center md:items-start text-white">
+            <div className="lg:col-span-8 flex flex-col items-center md:items-start text-white text-left">
               {/* Badge */}
               <motion.div 
                 initial={{ opacity: 0, y: 15 }}
@@ -335,7 +676,7 @@ export default function App() {
                 transition={{ duration: 0.8, delay: 0.1 }}
                 className="font-display font-bold text-4xl sm:text-5xl md:text-6xl tracking-tight text-white leading-tight mb-6 max-w-3xl"
               >
-                Bek Mebeli — Uyingiz uchun <span className="gold-gradient-text font-semibold italic">shinamlik</span> va <span className="gold-gradient-text font-semibold">sifat</span>
+                Bek Mebeli — Uyingiz uchun <span className="gold-gradient-text font-semibold italic font-serif">shinamlik</span> va <span className="gold-gradient-text font-semibold">sifat</span>
               </motion.h1>
 
               {/* Description */}
@@ -378,7 +719,7 @@ export default function App() {
                 initial={{ opacity: 0, scale: 0.9 }}
                 animate={{ opacity: 1, scale: 1 }}
                 transition={{ duration: 0.8, delay: 0.4 }}
-                className="bg-slate-900/90 border border-slate-800 p-8 rounded-2xl shadow-2xl backdrop-blur-md max-w-sm"
+                className="bg-slate-900/90 border border-slate-800 p-8 rounded-2xl shadow-2xl backdrop-blur-md max-w-sm text-left"
               >
                 <div className="flex items-center space-x-1 mb-4 text-gold-400">
                   {[...Array(5)].map((_, i) => (
@@ -391,7 +732,7 @@ export default function App() {
                 </p>
                 <div className="border-t border-slate-800 pt-3 flex items-center justify-between text-xs">
                   <span className="text-white font-medium">Sardor Rahimov</span>
-                  <span className="text-gold-400">Baxtli mijoz</span>
+                  <span className="text-gold-400 font-medium">Baxtli mijoz</span>
                 </div>
               </motion.div>
             </div>
@@ -418,7 +759,7 @@ export default function App() {
         </div>
       </section>
 
-      {/* CATALOG (GRID KO'RINISHIDA) */}
+      {/* CATALOG (DYNAMIC GRID) */}
       <section id="catalog" className="py-24 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="text-center max-w-3xl mx-auto mb-16">
           <h2 className="text-xs font-semibold tracking-widest text-gold-500 uppercase font-mono mb-2">Bizning katalogimiz</h2>
@@ -432,7 +773,7 @@ export default function App() {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
-          {FURNITURE_CATEGORIES.map((category) => (
+          {categories.map((category) => (
             <div 
               key={category.id}
               className="bg-white rounded-2xl overflow-hidden shadow-md hover:shadow-xl border border-slate-100 transition-all duration-300 flex flex-col group"
@@ -446,22 +787,22 @@ export default function App() {
                 />
                 <div className="absolute inset-0 bg-slate-950/20 group-hover:bg-slate-950/10 transition-colors duration-300" />
                 <div className="absolute top-4 left-4 bg-slate-900/80 text-gold-400 text-[10px] font-mono uppercase tracking-widest px-3 py-1 rounded-full backdrop-blur-sm">
-                  Kategoriya
+                  Premium
                 </div>
               </div>
 
               {/* Card Content */}
-              <div className="p-6 flex-grow flex flex-col">
+              <div className="p-6 flex-grow flex flex-col text-left">
                 <h3 className="font-display font-bold text-xl text-slate-900 mb-2 group-hover:text-gold-600 transition-colors duration-300">
                   {category.title}
                 </h3>
-                <p className="text-slate-500 text-sm font-light leading-relaxed mb-6 flex-grow">
+                <p className="text-slate-500 text-sm font-light leading-relaxed mb-6 flex-grow line-clamp-3">
                   {category.description}
                 </p>
                 
                 <button 
                   onClick={() => setSelectedCategory(category)}
-                  className="w-full bg-slate-50 hover:bg-gold-50 hover:text-gold-700 text-slate-700 font-medium py-3 px-4 rounded-xl border border-slate-100 hover:border-gold-200 transition-all duration-300 flex items-center justify-center space-x-1"
+                  className="w-full bg-slate-50 hover:bg-gold-50 hover:text-gold-700 text-slate-700 font-medium py-3 px-4 rounded-xl border border-slate-100 hover:border-gold-200 transition-all duration-300 flex items-center justify-center space-x-1 cursor-pointer"
                 >
                   <span>Batafsil ma'lumot</span>
                   <ChevronRight className="w-4 h-4" />
@@ -527,7 +868,7 @@ export default function App() {
             <div className="absolute -bottom-6 -right-6 w-full h-full border-2 border-gold-400 rounded-2xl z-0 pointer-events-none hidden sm:block" />
             
             {/* Float Stat Badge */}
-            <div className="absolute bottom-6 left-6 z-20 bg-slate-900/90 text-white p-4 rounded-xl backdrop-blur-sm max-w-xs border border-slate-800">
+            <div className="absolute bottom-6 left-6 z-20 bg-slate-900/90 text-white p-4 rounded-xl backdrop-blur-sm max-w-xs border border-slate-800 text-left">
               <div className="flex items-center space-x-2 text-gold-400 mb-1">
                 <ShieldCheck className="w-5 h-5" />
                 <span className="text-xs font-semibold tracking-wider font-mono uppercase">Kafolat va Sifat</span>
@@ -539,7 +880,7 @@ export default function App() {
           </div>
 
           {/* Description content column */}
-          <div className="lg:col-span-7 flex flex-col justify-center">
+          <div className="lg:col-span-7 flex flex-col justify-center text-left">
             <h2 className="text-xs font-semibold tracking-widest text-gold-500 uppercase font-mono mb-2">Biz haqimizda</h2>
             <h3 className="font-display font-bold text-3xl sm:text-4xl text-slate-900 tracking-tight mb-6">
               "Bek Mebeli" — Yillar davomida shakllangan ishonch
@@ -587,10 +928,10 @@ export default function App() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-            {TESTIMONIALS.map((t) => (
+            {testimonials.map((t) => (
               <div 
                 key={t.id}
-                className="bg-slate-800/50 border border-slate-800 p-8 rounded-2xl flex flex-col justify-between hover:border-slate-700 hover:bg-slate-800/80 transition-all duration-300"
+                className="bg-slate-800/50 border border-slate-800 p-8 rounded-2xl flex flex-col justify-between hover:border-slate-700 hover:bg-slate-800/80 transition-all duration-300 text-left"
               >
                 <div>
                   <div className="flex items-center space-x-1 mb-4 text-gold-400">
@@ -618,46 +959,37 @@ export default function App() {
         </div>
       </section>
 
-      {/* BUYURTMA BERISH FORMASI */}
-      <section id="order" className="py-24 max-w-4xl mx-auto px-4 sm:px-6">
-        <div className="bg-white rounded-3xl shadow-xl shadow-slate-200 border border-slate-100 overflow-hidden">
-          <div className="grid grid-cols-1 lg:grid-cols-12">
-            
-            {/* Left accent column */}
-            <div className="lg:col-span-4 bg-slate-900 text-white p-8 sm:p-12 flex flex-col justify-between relative overflow-hidden">
-              <div className="absolute inset-0 bg-gradient-to-br from-slate-900 to-slate-950 z-0" />
-              {/* background vector accent */}
-              <div className="absolute -right-10 -bottom-10 w-40 h-40 rounded-full bg-gold-500/10 blur-xl pointer-events-none" />
-              
-              <div className="relative z-10">
-                <span className="text-gold-400 text-xs font-semibold tracking-widest font-mono uppercase">Maslahat olish</span>
-                <h3 className="font-display font-bold text-2xl text-white mt-2 leading-snug">
-                  Mebel haqida bepul konsultatsiya
-                </h3>
-                <p className="text-slate-400 text-xs font-light leading-relaxed mt-4">
-                  Ma'lumotlaringizni yozib qoldiring. Loyiha menejeri sizga 15 daqiqa ichida qo'ng'iroq qiladi va siz qiziqqan barcha savollarga batafsil javob beradi.
+      {/* BUYURTMA BERISH FORMASI VA MIJOZ BUYURTMALAR TARIXI */}
+      <section id="order" className="py-24 max-w-6xl mx-auto px-4 sm:px-6">
+        
+        {/* Dynamic Warning Card if User Not Logged In */}
+        {!user && (
+          <div className="mb-8 bg-gold-500/10 border border-gold-500/20 rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between text-left">
+            <div className="flex items-center space-x-3">
+              <span className="p-2 bg-gold-500/20 text-gold-600 rounded-xl font-bold font-mono text-xs">!</span>
+              <div>
+                <h5 className="font-bold text-xs text-slate-900 uppercase">Kirgan holda buyurtma berish</h5>
+                <p className="text-[11px] text-slate-500 mt-0.5 leading-relaxed font-light">
+                  Google profilingiz orqali tizimga kirib buyurtma qilsangiz, buyurtmangiz holatini (tayyorlanish jarayonini) xaritadan va admin qeydlaridan real-vaqt rejimida kuzatib borishingiz mumkin!
                 </p>
               </div>
-
-              <div className="relative z-10 pt-8 border-t border-slate-800/80 space-y-4 text-xs font-light text-slate-300">
-                <div className="flex items-center space-x-3">
-                  <CheckCircle className="w-4 h-4 text-gold-400 shrink-0" />
-                  <span>Bepul o'lchov olish</span>
-                </div>
-                <div className="flex items-center space-x-3">
-                  <CheckCircle className="w-4 h-4 text-gold-400 shrink-0" />
-                  <span>Bepul 3D Dizayn chizish</span>
-                </div>
-                <div className="flex items-center space-x-3">
-                  <CheckCircle className="w-4 h-4 text-gold-400 shrink-0" />
-                  <span>Tezkor yetkazib berish</span>
-                </div>
-              </div>
             </div>
+            <button 
+              onClick={loginWithGoogle}
+              className="mt-3 sm:mt-0 bg-slate-950 text-white font-bold text-xs px-4 py-2 rounded-xl hover:bg-slate-900 transition-colors cursor-pointer shrink-0"
+            >
+              Google orqali kirish
+            </button>
+          </div>
+        )}
 
-            {/* Right form column */}
-            <div className="lg:col-span-8 p-8 sm:p-12">
-              <h4 className="font-display font-semibold text-xl text-slate-900 mb-6">Buyurtma yoki so'rov yuborish</h4>
+        <div className="bg-white rounded-3xl shadow-xl shadow-slate-200 border border-slate-100 overflow-hidden">
+          <div className="grid grid-cols-1 lg:grid-cols-12 divide-y lg:divide-y-0 lg:divide-x divide-slate-100">
+            
+            {/* Left Column: Form or Success */}
+            <div className="lg:col-span-7 p-8 sm:p-12 text-left">
+              <h4 className="font-display font-semibold text-xl text-slate-900 mb-2">Mebel uchun so'rov qoldirish</h4>
+              <p className="text-xs text-slate-400 mb-6 font-light">Mutaxassislarimiz 15 daqiqa ichida siz bilan bog'lanishadi.</p>
               
               {isSubmitted ? (
                 <motion.div 
@@ -668,9 +1000,9 @@ export default function App() {
                   <div className="w-16 h-16 rounded-full bg-emerald-100 flex items-center justify-center mb-4">
                     <CheckCircle className="w-8 h-8 text-emerald-600" />
                   </div>
-                  <h5 className="font-display font-semibold text-lg text-emerald-900 mb-2">Xabaringiz qabul qilindi!</h5>
+                  <h5 className="font-display font-semibold text-lg text-emerald-900 mb-2">Buyurtmangiz qabul qilindi!</h5>
                   <p className="text-emerald-700 text-sm font-light leading-relaxed max-w-sm mb-6">
-                    Rahmat, {formData.fullName}. Mutaxassislarimiz tez fursatda (+998 {formData.phone.replace(/\D/g, '').substring(3, 5) ? `(${formData.phone.replace(/\D/g, '').substring(3, 5)})` : ''} ...) raqamingiz orqali siz bilan bog'lanishadi.
+                    Rahmat, {formData.fullName}. {user ? "Siz tizimga kirgan holda bron qildingiz. Buyurtmangiz holatini o'ng tarafdagi tarix bo'limida real vaqtda kuzatishingiz mumkin." : `Mutaxassislarimiz tez fursatda (+998 ${formData.phone.replace(/\D/g, '').substring(3, 5) ? `(${formData.phone.replace(/\D/g, '').substring(3, 5)})` : ''} ...) raqamingiz orqali bog'lanishadi.`}
                   </p>
                   <button 
                     onClick={resetForm}
@@ -707,7 +1039,6 @@ export default function App() {
                       onChange={handlePhoneChange}
                       className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3.5 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-gold-500 focus:border-transparent transition-all"
                     />
-                    <span className="text-[10px] text-slate-400 mt-1 block">Raqamlarni kiriting, formatlash avtomatik amalga oshiriladi.</span>
                   </div>
 
                   <div>
@@ -721,11 +1052,10 @@ export default function App() {
                       className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3.5 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-gold-500 focus:border-transparent transition-all appearance-none cursor-pointer"
                     >
                       <option value="">-- Mebel turini tanlang --</option>
-                      <option value="Yotoqxona Mebellari">Yotoqxona mebellari</option>
-                      <option value="Oshxona Mebellari">Oshxona mebellari</option>
-                      <option value="Mehmonxona Mebellari">Mehmonxona mebellari</option>
-                      <option value="Yumshoq Mebellar">Yumshoq mebellar</option>
-                      <option value="Boshqa turdagi mebel">Maxsus individual buyurtma (boshqa)</option>
+                      {categories.map(c => (
+                        <option key={c.id} value={c.title}>{c.title}</option>
+                      ))}
+                      <option value="Maxsus Loyiha">Maxsus individual buyurtma (boshqa)</option>
                     </select>
                   </div>
 
@@ -747,9 +1077,93 @@ export default function App() {
                     className="w-full bg-slate-900 hover:bg-slate-800 text-white font-semibold py-4 rounded-xl shadow-md hover:shadow-lg transition-all duration-300 flex items-center justify-center space-x-2 cursor-pointer mt-2"
                   >
                     <Send className="w-4 h-4" />
-                    <span>Ma'lumotlarni yuborish</span>
+                    <span>So'rov yuborish</span>
                   </button>
                 </form>
+              )}
+            </div>
+
+            {/* Right Column: User Bookings History (Feature 2 - Real data status tracking) */}
+            <div className="lg:col-span-5 p-8 sm:p-12 bg-slate-50/50 text-left">
+              <div className="flex items-center space-x-2 mb-4">
+                <History className="w-5 h-5 text-gold-600" />
+                <h4 className="font-display font-semibold text-base text-slate-900">Mening Buyurtmalarim</h4>
+              </div>
+
+              {user ? (
+                isAdminUser ? (
+                  <div className="bg-slate-900 text-white p-5 rounded-2xl border border-slate-950 text-xs text-left space-y-3">
+                    <div className="flex items-center space-x-1.5 text-gold-400 font-bold uppercase tracking-wider font-mono text-[9px]">
+                      <ShieldCheck className="w-4 h-4 text-gold-400" />
+                      <span>Siz administrator ekansiz</span>
+                    </div>
+                    <p className="text-slate-300 leading-relaxed font-light">
+                      Adminlar barcha buyurtmalarni boshqarish huquqiga ega. Buyurtmalarni va settingslarni ko'rish va o'zgartirish uchun tepadagi <b>Admin Panel</b> tugmasini bosing.
+                    </p>
+                    <button 
+                      onClick={() => setShowAdminPanel(true)}
+                      className="w-full bg-gold-500 hover:bg-gold-600 text-slate-950 font-bold py-2.5 rounded-xl transition-all"
+                    >
+                      Admin Panelni ochish
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-3.5 max-h-[350px] overflow-y-auto pr-1">
+                    {userBookings.map((b) => (
+                      <div key={b.id} className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm text-xs space-y-3">
+                        <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                          <span className="font-semibold text-slate-800 line-clamp-1">{b.category}</span>
+                          <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold tracking-wider font-mono uppercase ${
+                            b.status === 'yangi' ? 'bg-amber-100 text-amber-800' :
+                            b.status === 'aloqada' ? 'bg-blue-100 text-blue-800' :
+                            b.status === 'kelishildi' ? 'bg-purple-100 text-purple-800' :
+                            b.status === 'yakunlandi' ? 'bg-emerald-100 text-emerald-800' :
+                            'bg-rose-100 text-rose-800'
+                          }`}>
+                            {b.status === 'yangi' ? 'Yangi' :
+                             b.status === 'aloqada' ? 'Aloqada' :
+                             b.status === 'kelishildi' ? 'Kelishildi' :
+                             b.status === 'yakunlandi' ? 'Yakunlandi' : 'Bekor bo\'ldi'}
+                          </span>
+                        </div>
+
+                        {/* Admin note representation */}
+                        {b.adminNote ? (
+                          <div className="bg-slate-50 p-3 rounded-lg border border-slate-100">
+                            <span className="text-[10px] text-slate-400 block uppercase font-mono tracking-wider">Usta / Admin Izohi</span>
+                            <p className="text-slate-600 leading-relaxed font-light mt-0.5">{b.adminNote}</p>
+                          </div>
+                        ) : (
+                          <p className="text-slate-400 font-light text-[10px] leading-relaxed">
+                            Ayni vaqtda dizaynerlarimiz buyurtmangizni ko'rib chiqmoqda. Usta tayinlanganidan so'ng ushbu oynada uning qeydlari va aloqa ma'lumotlari paydo bo'ladi.
+                          </p>
+                        )}
+                      </div>
+                    ))}
+
+                    {userBookings.length === 0 && (
+                      <div className="py-12 text-center text-slate-400 font-light text-xs">
+                        Sizda hozircha faol buyurtmalar mavjud emas.
+                      </div>
+                    )}
+                  </div>
+                )
+              ) : (
+                <div className="bg-white/80 p-8 rounded-2xl border border-slate-150 text-center space-y-4">
+                  <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center mx-auto text-slate-400">
+                    <UserIcon className="w-5 h-5" />
+                  </div>
+                  <p className="text-slate-500 font-light text-xs leading-relaxed max-w-xs mx-auto">
+                    Buyurtmalaringiz holatini kuzatib borish uchun avval tizimga kiring.
+                  </p>
+                  <button 
+                    onClick={loginWithGoogle}
+                    className="w-full bg-slate-900 hover:bg-slate-800 text-white font-semibold py-2.5 rounded-xl text-xs flex items-center justify-center space-x-2 transition-all cursor-pointer"
+                  >
+                    <LogIn className="w-4 h-4 text-gold-400" />
+                    <span>Google bilan tizimga kirish</span>
+                  </button>
+                </div>
               )}
             </div>
 
@@ -778,22 +1192,22 @@ export default function App() {
                   </span>
                 </div>
               </a>
-              <p className="text-xs text-slate-400 leading-relaxed font-light">
+              <p className="text-xs text-slate-400 leading-relaxed font-light text-left">
                 Toshkentdagi eng sifatli va hashamatli buyurtma asosidagi mebellarni ishlab chiqaruvchi brend. Biz har bir xonadonga o'zgacha shinamlik va hashamatli kayfiyat olib kiramiz.
               </p>
               
               {/* Working hours */}
-              <div className="flex items-center space-x-3 text-xs text-slate-300 bg-slate-900/60 p-4 rounded-xl border border-slate-900/80">
+              <div className="flex items-center space-x-3 text-xs text-slate-300 bg-slate-900/60 p-4 rounded-xl border border-slate-900/80 text-left">
                 <Clock className="w-5 h-5 text-gold-400 shrink-0" />
                 <div>
                   <h6 className="font-semibold text-white">Ish vaqti:</h6>
-                  <p className="text-slate-400 mt-0.5">{CONTACT_INFO.workingHours}</p>
+                  <p className="text-slate-400 mt-0.5">{settings.workingHours}</p>
                 </div>
               </div>
             </div>
 
             {/* Column 2: Navigation links */}
-            <div className="lg:col-span-2 flex flex-col space-y-4">
+            <div className="lg:col-span-2 flex flex-col space-y-4 text-left">
               <h5 className="font-display font-bold text-sm tracking-widest text-gold-400 uppercase">Bo'limlar</h5>
               <div className="flex flex-col space-y-2.5 text-xs text-slate-400 font-light">
                 <a href="#catalog" className="hover:text-gold-400 transition-colors">Mahsulotlar</a>
@@ -804,10 +1218,10 @@ export default function App() {
             </div>
 
             {/* Column 3: Contact information */}
-            <div className="lg:col-span-3 flex flex-col space-y-4">
+            <div className="lg:col-span-3 flex flex-col space-y-4 text-left">
               <h5 className="font-display font-bold text-sm tracking-widest text-gold-400 uppercase">Aloqa va bog'lanish</h5>
-              <div className="flex flex-col space-y-3 text-xs text-slate-400 font-light">
-                {CONTACT_INFO.phones.map((phone, idx) => (
+              <div className="flex flex-col space-y-3 text-xs text-slate-300 font-light">
+                {settings.phones.map((phone, idx) => (
                   <a 
                     key={idx} 
                     href={`tel:${phone.replace(/\s+/g, '')}`} 
@@ -820,14 +1234,14 @@ export default function App() {
                 
                 <div className="flex items-start space-x-3 text-slate-300 pt-1">
                   <MapPin className="w-4 h-4 text-gold-400 shrink-0 mt-0.5" />
-                  <span className="leading-relaxed text-slate-400 text-[11px]">{CONTACT_INFO.address}</span>
+                  <span className="leading-relaxed text-slate-400 text-[11px]">{settings.address}</span>
                 </div>
               </div>
 
               {/* Social links */}
               <div className="flex items-center space-x-4 pt-3">
                 <a 
-                  href={CONTACT_INFO.telegram} 
+                  href={settings.telegram} 
                   target="_blank" 
                   rel="noopener noreferrer" 
                   className="w-10 h-10 rounded-xl bg-slate-900 hover:bg-gold-500 border border-slate-800 hover:border-transparent flex items-center justify-center text-slate-400 hover:text-white transition-all duration-300"
@@ -836,7 +1250,7 @@ export default function App() {
                   <MessageCircle className="w-5 h-5" />
                 </a>
                 <a 
-                  href={CONTACT_INFO.instagram} 
+                  href={settings.instagram} 
                   target="_blank" 
                   rel="noopener noreferrer" 
                   className="w-10 h-10 rounded-xl bg-slate-900 hover:bg-gold-500 border border-slate-800 hover:border-transparent flex items-center justify-center text-slate-400 hover:text-white transition-all duration-300"
@@ -848,7 +1262,7 @@ export default function App() {
             </div>
 
             {/* Column 4: Google Maps integration card */}
-            <div className="lg:col-span-3 flex flex-col space-y-4">
+            <div className="lg:col-span-3 flex flex-col space-y-4 text-left">
               <h5 className="font-display font-bold text-sm tracking-widest text-gold-400 uppercase">Xaritadagi manzilimiz</h5>
               
               {/* Maps Preview Container */}
@@ -861,7 +1275,7 @@ export default function App() {
                 </div>
                 
                 <a 
-                  href={CONTACT_INFO.mapsLink}
+                  href={settings.mapsLink}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="absolute inset-0 z-20 flex items-center justify-center bg-slate-950/70 opacity-0 group-hover:opacity-100 transition-opacity duration-300 text-xs font-semibold text-gold-400 space-x-1"
@@ -872,7 +1286,7 @@ export default function App() {
               </div>
               
               <a 
-                href={CONTACT_INFO.mapsLink}
+                href={settings.mapsLink}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-xs text-gold-400 hover:text-gold-300 font-medium underline flex items-center space-x-1 mt-1"
@@ -903,7 +1317,7 @@ export default function App() {
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setSelectedCategory(null)}
-              className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm"
+              className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm animate-fade-in"
             />
             
             {/* Modal Body */}
@@ -937,14 +1351,14 @@ export default function App() {
                   <div className="absolute inset-0 bg-gradient-to-t from-slate-950/80 via-slate-900/20 to-transparent" />
                   
                   {/* Category Title Overlay */}
-                  <div className="absolute bottom-6 left-6 right-6 text-white">
+                  <div className="absolute bottom-6 left-6 right-6 text-white text-left">
                     <span className="text-gold-400 text-xs font-semibold tracking-widest font-mono uppercase">Premium To'plam</span>
                     <h3 className="font-display font-bold text-2xl sm:text-3xl mt-1">{selectedCategory.title}</h3>
                   </div>
                 </div>
 
                 {/* Details Body */}
-                <div className="p-6 sm:p-8 space-y-6">
+                <div className="p-6 sm:p-8 space-y-6 text-left">
                   
                   <div>
                     <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">To'plam tavsifi</h4>
@@ -967,18 +1381,18 @@ export default function App() {
                   </div>
 
                   {/* Specifications (Material, Guarantee, Lead Time) */}
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-4 border-t border-slate-100">
-                    <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 text-center sm:text-left">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-4 border-t border-slate-100 text-left">
+                    <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
                       <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block mb-1">Xomashyo & Material</span>
                       <span className="text-xs font-medium text-slate-800 leading-normal block">{selectedCategory.material}</span>
                     </div>
                     
-                    <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 text-center sm:text-left">
+                    <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
                       <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block mb-1">Rasmiy Kafolat</span>
                       <span className="text-xs font-semibold text-gold-600 block">{selectedCategory.guarantee}</span>
                     </div>
 
-                    <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 text-center sm:text-left">
+                    <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
                       <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block mb-1">Tayyorlanish vaqti</span>
                       <span className="text-xs font-medium text-slate-800 block">{selectedCategory.duration}</span>
                     </div>
@@ -1007,6 +1421,24 @@ export default function App() {
               </div>
             </motion.div>
           </div>
+        )}
+      </AnimatePresence>
+
+      {/* RENDER MODULAR ADMIN DASHBOARD MODAL */}
+      <AnimatePresence>
+        {showAdminPanel && (
+          <AdminPanel 
+            currentUserEmail={user?.email || null}
+            currentUserId={user?.uid || null}
+            bookings={bookings}
+            categories={categories}
+            testimonials={testimonials}
+            settings={settings}
+            admins={admins}
+            onRefreshAll={refreshAllData}
+            onClose={() => setShowAdminPanel(false)}
+            onSeedDatabase={seedDatabase}
+          />
         )}
       </AnimatePresence>
 

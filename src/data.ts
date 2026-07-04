@@ -91,7 +91,7 @@ export const ADVANTAGES = [
 
 export const TESTIMONIALS: Testimonial[] = [
   {
-    id: 1,
+    id: '1',
     name: 'Sardor Rahimov',
     role: 'Toshkent shahri, Yangihayot t.',
     comment: 'Bek Mebeli jamoasidan oshxona mebeli buyurtma bergan edik. Haqiqiy ustalarning ishi ekani ko\'rinib turibdi. Kelishilgan muddatdan 2 kun oldin kelib, juda tez va toza o\'rnatib berishdi. Blum furnituralari o\'ta yumshoq ishlayapti. Tavsiya qilaman!',
@@ -99,15 +99,15 @@ export const TESTIMONIALS: Testimonial[] = [
     date: '15-May, 2026'
   },
   {
-    id: 2,
+    id: '2',
     name: 'Madina Usmonova',
     role: 'Toshkent shahri, Yunusobod t.',
-    comment: 'Yotoqxona to\'plamini buyurtma qildik. Matolar sifati va rangi xuddi dizayn loyihadagidek chiqdi. Karavot o\'ta qulay va mustahkam ekan, g\'irchillagan ovozlar yo\'q. Ular bizga bepul konsul va ko\'zgu ham sovg\'a qilishdi. Katta rahmat!',
+    comment: 'Yotoqxona to\'plamini buyurtma qildik. Matolar sifati va rangi xuddi dizayn loyihadagidek chiqdi. Karavot o\'ta qulay and mustahkam ekan, g\'irchillagan ovozlar yo\'q. Ular bizga bepul konsul va ko\'zgu ham sovg\'a qilishdi. Katta rahmat!',
     rating: 5,
     date: '02-Iyun, 2026'
   },
   {
-    id: 3,
+    id: '3',
     name: 'Dilshod To\'rayev',
     role: 'Toshkent shahri, Chilonzor t.',
     comment: 'Mehmonxonamiz uchun TV tumba va vitrina yasatdik. Minimalist uslubdagi dizayni mehmonxonaga juda mos tushdi. MDF sifati va chetlari juda tekis ishlangan. Narxi ham bozordagidan ancha arzon chiqdi.',
