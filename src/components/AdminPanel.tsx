@@ -22,7 +22,9 @@ import {
   RefreshCw,
   Printer,
   XCircle,
-  HelpCircle
+  HelpCircle,
+  Maximize2,
+  Minimize2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -102,6 +104,18 @@ export default function AdminPanel({
   // Revenue projection helper (Part of the 15 features)
   const [averageOrderValue, setAverageOrderValue] = useState<number>(3500000); // 3.5M UZS average
 
+  // State to support full-screen mode (Kattalashtirish rejimi)
+  const [isMaximized, setIsMaximized] = useState(false);
+
+  // 1A. STATE FOR MANUAL BOOKING ADDITION
+  const [showAddManualBooking, setShowAddManualBooking] = useState(false);
+  const [newManualBooking, setNewManualBooking] = useState({
+    fullName: '',
+    phone: '',
+    category: '',
+    message: ''
+  });
+
   useEffect(() => {
     setEditedSettings({ ...settings });
   }, [settings]);
@@ -109,6 +123,89 @@ export default function AdminPanel({
   const triggerSuccessMessage = (message: string) => {
     setOperationSuccess(message);
     setTimeout(() => setOperationSuccess(null), 3000);
+  };
+
+  // 1A. ADD MANUAL BOOKING
+  const handleAddManualBooking = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newManualBooking.fullName.trim() || !newManualBooking.phone.trim()) {
+      alert("Iltimos, mijoz ismi va telefon raqamini kiriting.");
+      return;
+    }
+    setIsOperating(true);
+    const bookingId = `b_${Date.now()}`;
+    const path = `bookings/${bookingId}`;
+    try {
+      await setDoc(doc(db, 'bookings', bookingId), {
+        fullName: newManualBooking.fullName.trim(),
+        phone: newManualBooking.phone.trim(),
+        category: newManualBooking.category || 'Shaxsiy mebel buyurtmasi',
+        message: newManualBooking.message.trim(),
+        status: 'yangi',
+        createdAt: serverTimestamp(),
+        adminNote: 'Menejer tomonidan qo\'lda kiritilgan buyurtma.'
+      });
+      triggerSuccessMessage("Yangi buyurtma muvaffaqiyatli qo'shildi!");
+      setNewManualBooking({ fullName: '', phone: '', category: '', message: '' });
+      setShowAddManualBooking(false);
+      await onRefreshAll();
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, path);
+    } finally {
+      setIsOperating(false);
+    }
+  };
+
+  // 1B. DOWNLOAD INVOICE AS TXT
+  const handleDownloadInvoice = (b: Booking) => {
+    let createdAtStr = 'Noaniq';
+    if (b.createdAt) {
+      try {
+        const t = b.createdAt as any;
+        if (t.seconds) {
+          createdAtStr = new Date(t.seconds * 1000).toLocaleString('uz-UZ');
+        } else if (t.toDate) {
+          createdAtStr = t.toDate().toLocaleString('uz-UZ');
+        } else {
+          createdAtStr = new Date(t).toLocaleString('uz-UZ');
+        }
+      } catch (e) {
+        createdAtStr = new Date().toLocaleString('uz-UZ');
+      }
+    }
+    
+    const invoiceContent = `=========================================
+               BEK MEBELI
+       PREMIUM QUALITY FURNITURE
+=========================================
+BUYURTMA ID: ${b.id}
+SANA:        ${createdAtStr}
+HOLAT:       ${b.status.toUpperCase()}
+-----------------------------------------
+MIJOZ:       ${b.fullName}
+TELEFON:     ${b.phone}
+MAHSULOT:    ${b.category}
+-----------------------------------------
+MIJOZ IZOHI:
+${b.message || "(Izoh qoldirilmagan)"}
+-----------------------------------------
+ADMIN QAYDLARI:
+${b.adminNote || "(Qaydlar yo'q)"}
+-----------------------------------------
+Eksport qilingan vaqt: ${new Date().toLocaleString('uz-UZ')}
+Tizim: BEK MEBELI premium tizimi
+=========================================`;
+
+    const blob = new Blob([invoiceContent], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `BEK_MEBELI_BUYURTMA_${b.fullName.replace(/\s+/g, '_')}.txt`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    triggerSuccessMessage("Hisob-faktura muvaffaqiyatli yuklab olindi!");
   };
 
   // 1. UPDATE BOOKING STATUS (Feature 3)
@@ -173,19 +270,26 @@ export default function AdminPanel({
   // 4. ADD NEW ADMIN (Feature 6)
   const handleAddAdmin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newAdminEmail.trim() || !newAdminUid.trim()) {
-      alert("Iltimos, email va UID maydonlarini to'ldiring.");
+    const email = newAdminEmail.trim().toLowerCase();
+    const uid = newAdminUid.trim();
+
+    if (!email && !uid) {
+      alert("Iltimos, email yoki UID maydonlaridan kamida birini kiritishingiz lozim.");
       return;
     }
+
     setIsOperating(true);
-    const path = `admins/${newAdminUid}`;
+    // Prefer UID as document ID if provided, otherwise use Email
+    const docId = uid ? uid : email;
+    const path = `admins/${docId}`;
     try {
-      await setDoc(doc(db, 'admins', newAdminUid), {
-        email: newAdminEmail.trim().toLowerCase(),
+      await setDoc(doc(db, 'admins', docId), {
+        email: email,
+        uid: uid,
         assignedAt: serverTimestamp(),
         assignedBy: currentUserEmail || 'Tizim'
       });
-      triggerSuccessMessage(`${newAdminEmail} muvaffaqiyatli admin etib tayinlandi!`);
+      triggerSuccessMessage("Yangi administrator muvaffaqiyatli tayinlandi!");
       setNewAdminEmail('');
       setNewAdminUid('');
       await onRefreshAll();
@@ -206,7 +310,7 @@ export default function AdminPanel({
       alert("O'zingizning adminligingizni o'zingiz o'chira olmaysiz!");
       return;
     }
-    if (!window.confirm(`Haqiqatan ham ${email} ning admin huquqlarini olib tashlamoqchimisiz?`)) return;
+    if (!window.confirm(`Haqiqatan ham ${email || adminId} ning admin huquqlarini olib tashlamoqchimisiz?`)) return;
     setIsOperating(true);
     const path = `admins/${adminId}`;
     try {
@@ -225,23 +329,44 @@ export default function AdminPanel({
     e.preventDefault();
     if (!editingCategory) return;
     setIsOperating(true);
-    const path = `categories/${editingCategory.id}`;
+    
+    const isNew = editingCategory.id === '';
+    const categoryId = isNew ? `c_${Date.now()}` : editingCategory.id;
+    const path = `categories/${categoryId}`;
+    
     try {
-      await setDoc(doc(db, 'categories', editingCategory.id), {
+      await setDoc(doc(db, 'categories', categoryId), {
         title: editingCategory.title,
         description: editingCategory.description,
-        image: editingCategory.image,
+        image: editingCategory.image || 'https://images.unsplash.com/photo-1555041469-a586c61ea9bc?auto=format&fit=crop&w=800&q=80',
         details: editingCategory.details,
         items: editingCategory.items,
         material: editingCategory.material,
         guarantee: editingCategory.guarantee,
         duration: editingCategory.duration
       });
-      triggerSuccessMessage(`${editingCategory.title} muvaffaqiyatli yangilandi!`);
+      triggerSuccessMessage(isNew ? `${editingCategory.title} muvaffaqiyatli qo'shildi!` : `${editingCategory.title} muvaffaqiyatli yangilandi!`);
       setEditingCategory(null);
       await onRefreshAll();
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, path);
+      handleFirestoreError(err, isNew ? OperationType.CREATE : OperationType.UPDATE, path);
+    } finally {
+      setIsOperating(false);
+    }
+  };
+
+  // 6B. DELETE CATEGORY (Feature 9 New CRUD)
+  const handleDeleteCategory = async (categoryId: string, title: string) => {
+    if (!window.confirm(`Haqiqatan ham "${title}" kategoriyasini butkul o'chirib tashlamoqchimisiz?`)) return;
+    setIsOperating(true);
+    const path = `categories/${categoryId}`;
+    try {
+      await deleteDoc(doc(db, 'categories', categoryId));
+      triggerSuccessMessage("Kategoriya muvaffaqiyatli o'chirildi!");
+      setEditingCategory(null);
+      await onRefreshAll();
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, path);
     } finally {
       setIsOperating(false);
     }
@@ -446,7 +571,7 @@ export default function AdminPanel({
   const estimatedTotalRevenue = stats.kelishildi * averageOrderValue + stats.yakunlandi * averageOrderValue;
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-md flex items-center justify-center p-4 overflow-hidden">
+    <div className={`fixed inset-0 z-50 bg-slate-900/45 backdrop-blur-md flex items-center justify-center overflow-hidden transition-all duration-300 ${isMaximized ? 'p-0' : 'p-2 sm:p-4'}`}>
       
       {/* SUCCESS / ERROR TOAST INDICATOR */}
       <AnimatePresence>
@@ -466,25 +591,29 @@ export default function AdminPanel({
       <motion.div 
         initial={{ opacity: 0, scale: 0.97, y: 15 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
-        className="bg-white w-full max-w-6xl rounded-3xl overflow-hidden shadow-2xl border border-slate-200 h-[92vh] flex flex-col relative"
+        className={`bg-white w-full overflow-hidden flex flex-col relative transition-all duration-300 ${
+          isMaximized 
+            ? 'h-screen w-screen rounded-none border-none' 
+            : 'max-w-6xl rounded-2xl sm:rounded-3xl shadow-2xl border border-slate-200 h-full sm:h-[92vh]'
+        }`}
       >
         
         {/* PANEL HEADER */}
-        <div className="bg-slate-950 text-white p-6 flex flex-col sm:flex-row items-center justify-between border-b border-slate-800">
-          <div className="flex items-center space-x-3 mb-4 sm:mb-0">
-            <span className="w-10 h-10 rounded-xl bg-gold-500 flex items-center justify-center font-display font-bold text-white text-lg">
+        <div className="bg-slate-950 text-white p-4 sm:p-6 flex flex-col sm:flex-row items-center justify-between border-b border-slate-800 gap-4">
+          <div className="flex items-center space-x-3 w-full sm:w-auto">
+            <span className="w-10 h-10 rounded-xl bg-gold-500 flex items-center justify-center font-display font-bold text-slate-950 text-lg shrink-0">
               B
             </span>
-            <div>
+            <div className="min-w-0">
               <div className="flex items-center space-x-2">
-                <h2 className="font-display font-bold text-xl tracking-wide text-white">BEK MEBELI</h2>
-                <span className="bg-gold-500/20 text-gold-400 border border-gold-500/30 text-[10px] font-mono tracking-wider font-semibold px-2 py-0.5 rounded-full uppercase">Admin Panel</span>
+                <h2 className="font-display font-bold text-base sm:text-lg tracking-wide text-white truncate">BEK MEBELI</h2>
+                <span className="bg-gold-500/20 text-gold-400 border border-gold-500/30 text-[9px] font-mono tracking-wider font-semibold px-2 py-0.5 rounded-full uppercase shrink-0">Admin</span>
               </div>
-              <p className="text-[11px] text-slate-400 font-mono">Tizim: {currentUserEmail}</p>
+              <p className="text-[10px] text-slate-400 font-mono truncate">Tizim: {currentUserEmail}</p>
             </div>
           </div>
 
-          <div className="flex items-center space-x-3">
+          <div className="flex items-center justify-end gap-2 sm:gap-3 w-full sm:w-auto">
             {/* Quick Refresh Button */}
             <button 
               onClick={async () => {
@@ -497,7 +626,7 @@ export default function AdminPanel({
               className="p-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 transition-colors flex items-center justify-center cursor-pointer"
               title="Bazani yangilash"
             >
-              <RefreshCw className={`w-5 h-5 ${isOperating ? 'animate-spin text-gold-400' : ''}`} />
+              <RefreshCw className={`w-4 h-4 sm:w-5 sm:h-5 ${isOperating ? 'animate-spin text-gold-400' : ''}`} />
             </button>
 
             {/* Print button */}
@@ -506,15 +635,28 @@ export default function AdminPanel({
               className="p-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 transition-colors flex items-center justify-center cursor-pointer"
               title="Hisobotni chop etish"
             >
-              <Printer className="w-5 h-5" />
+              <Printer className="w-4 h-4 sm:w-5 sm:h-5" />
+            </button>
+
+            {/* Maximize/Minimize Button (Kattalashtirish/Kichiklashtirish) */}
+            <button 
+              onClick={() => setIsMaximized(!isMaximized)}
+              className="p-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 transition-colors flex items-center justify-center cursor-pointer"
+              title={isMaximized ? "Kichiklashtirish" : "Kattalashtirish"}
+            >
+              {isMaximized ? (
+                <Minimize2 className="w-4 h-4 sm:w-5 sm:h-5 text-gold-400" />
+              ) : (
+                <Maximize2 className="w-4 h-4 sm:w-5 sm:h-5" />
+              )}
             </button>
 
             {/* Close Button */}
             <button 
               onClick={onClose}
-              className="bg-rose-500/10 hover:bg-rose-500 text-rose-500 hover:text-white px-4 py-2.5 rounded-xl text-xs font-semibold border border-rose-500/20 transition-all cursor-pointer"
+              className="bg-rose-500/10 hover:bg-rose-500 text-rose-500 hover:text-white px-3 sm:px-4 py-2.5 rounded-xl text-xs font-semibold border border-rose-500/20 transition-all cursor-pointer whitespace-nowrap"
             >
-              Panelni yopish
+              Yopish
             </button>
           </div>
         </div>
@@ -568,7 +710,7 @@ export default function AdminPanel({
           </div>
 
           {/* ACTIVE CONTENT VIEW */}
-          <div className="flex-grow p-6 overflow-y-auto">
+          <div className="flex-grow p-4 sm:p-6 overflow-y-auto">
             
             {/* 1. DASHBOARD OVERVIEW */}
             {activeTab === 'dashboard' && (
@@ -576,33 +718,33 @@ export default function AdminPanel({
                 
                 {/* Stats Bento Grid (Feature 13) */}
                 <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                  <div className="bg-white p-6 rounded-2xl border border-slate-150 shadow-sm">
+                  <div className="bg-white p-4 sm:p-6 rounded-2xl border border-slate-150 shadow-sm">
                     <span className="text-[10px] font-mono tracking-wider text-slate-400 uppercase font-semibold">Barcha buyurtmalar</span>
-                    <h3 className="text-3xl font-bold text-slate-950 mt-1">{stats.total} ta</h3>
+                    <h3 className="text-2xl sm:text-3xl font-bold text-slate-950 mt-1">{stats.total} ta</h3>
                     <div className="w-full bg-slate-100 h-1.5 rounded-full mt-3 overflow-hidden">
                       <div className="bg-gold-500 h-full rounded-full" style={{ width: `${stats.total > 0 ? 100 : 0}%` }} />
                     </div>
                   </div>
 
-                  <div className="bg-white p-6 rounded-2xl border border-slate-150 shadow-sm relative overflow-hidden">
+                  <div className="bg-white p-4 sm:p-6 rounded-2xl border border-slate-150 shadow-sm relative overflow-hidden">
                     <span className="text-[10px] font-mono tracking-wider text-amber-500 uppercase font-semibold">Yangi buyurtmalar</span>
-                    <h3 className="text-3xl font-bold text-amber-600 mt-1">{stats.yangi} ta</h3>
+                    <h3 className="text-2xl sm:text-3xl font-bold text-amber-600 mt-1">{stats.yangi} ta</h3>
                     <div className="w-full bg-slate-100 h-1.5 rounded-full mt-3 overflow-hidden">
                       <div className="bg-amber-500 h-full rounded-full" style={{ width: `${stats.total > 0 ? (stats.yangi / stats.total) * 100 : 0}%` }} />
                     </div>
                   </div>
 
-                  <div className="bg-white p-6 rounded-2xl border border-slate-150 shadow-sm">
+                  <div className="bg-white p-4 sm:p-6 rounded-2xl border border-slate-150 shadow-sm">
                     <span className="text-[10px] font-mono tracking-wider text-emerald-500 uppercase font-semibold font-semibold">Kelishildi / Yakunlandi</span>
-                    <h3 className="text-3xl font-bold text-emerald-600 mt-1">{stats.kelishildi + stats.yakunlandi} ta</h3>
+                    <h3 className="text-2xl sm:text-3xl font-bold text-emerald-600 mt-1">{stats.kelishildi + stats.yakunlandi} ta</h3>
                     <div className="w-full bg-slate-100 h-1.5 rounded-full mt-3 overflow-hidden">
                       <div className="bg-emerald-500 h-full rounded-full" style={{ width: `${stats.total > 0 ? ((stats.kelishildi + stats.yakunlandi) / stats.total) * 100 : 0}%` }} />
                     </div>
                   </div>
 
-                  <div className="bg-white p-6 rounded-2xl border border-slate-150 shadow-sm">
+                  <div className="bg-white p-4 sm:p-6 rounded-2xl border border-slate-150 shadow-sm">
                     <span className="text-[10px] font-mono tracking-wider text-rose-500 uppercase font-semibold">Bekor qilingan</span>
-                    <h3 className="text-3xl font-bold text-rose-600 mt-1">{stats.bekor} ta</h3>
+                    <h3 className="text-2xl sm:text-3xl font-bold text-rose-600 mt-1">{stats.bekor} ta</h3>
                     <div className="w-full bg-slate-100 h-1.5 rounded-full mt-3 overflow-hidden">
                       <div className="bg-rose-500 h-full rounded-full" style={{ width: `${stats.total > 0 ? (stats.bekor / stats.total) * 100 : 0}%` }} />
                     </div>
@@ -744,8 +886,96 @@ export default function AdminPanel({
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
                 
                 {/* Bookings List Panel */}
-                <div className="lg:col-span-7 bg-white p-6 rounded-2xl border border-slate-150 shadow-sm space-y-4">
-                  <h3 className="font-display font-semibold text-lg text-slate-950">Buyurtmalar Ro'yxati</h3>
+                <div className={`lg:col-span-7 bg-white p-4 sm:p-6 rounded-2xl border border-slate-150 shadow-sm space-y-4 ${selectedBooking ? 'hidden lg:block' : 'block'}`}>
+                  <div className="flex items-center justify-between border-b border-slate-50 pb-2">
+                    <h3 className="font-display font-semibold text-lg text-slate-950">Buyurtmalar Ro'yxati</h3>
+                    <button 
+                      onClick={() => setShowAddManualBooking(!showAddManualBooking)}
+                      className="bg-gold-500 hover:bg-gold-600 text-slate-950 font-semibold py-1.5 px-3 rounded-xl text-[11px] flex items-center space-x-1 transition-all cursor-pointer shadow-sm"
+                    >
+                      <Plus className="w-3.5 h-3.5 text-slate-950" />
+                      <span>Qo'lda qo'shish</span>
+                    </button>
+                  </div>
+
+                  {showAddManualBooking && (
+                    <form onSubmit={handleAddManualBooking} className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-3 text-left">
+                      <div className="flex items-center justify-between border-b border-slate-200 pb-1.5">
+                        <h4 className="font-semibold text-xs text-slate-800 uppercase tracking-wider">Yangi buyurtma (Qo'lda kiritish)</h4>
+                        <button type="button" onClick={() => setShowAddManualBooking(false)} className="text-slate-400 hover:text-slate-600">
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-[10px] font-semibold text-slate-600 mb-1">Mijoz to'liq ismi *</label>
+                          <input 
+                            type="text" 
+                            required
+                            placeholder="Masalan: Sardor Tuyginov"
+                            value={newManualBooking.fullName}
+                            onChange={(e) => setNewManualBooking({ ...newManualBooking, fullName: e.target.value })}
+                            className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-gold-500"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-[10px] font-semibold text-slate-600 mb-1">Mijoz telefon raqami *</label>
+                          <input 
+                            type="text" 
+                            required
+                            placeholder="Masalan: +998 90 123 45 67"
+                            value={newManualBooking.phone}
+                            onChange={(e) => setNewManualBooking({ ...newManualBooking, phone: e.target.value })}
+                            className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-gold-500 font-mono"
+                          />
+                        </div>
+
+                        <div className="sm:col-span-2">
+                          <label className="block text-[10px] font-semibold text-slate-600 mb-1">Qiziqayotgan mebel toifasi</label>
+                          <select 
+                            value={newManualBooking.category}
+                            onChange={(e) => setNewManualBooking({ ...newManualBooking, category: e.target.value })}
+                            className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-gold-500 text-slate-700 cursor-pointer"
+                          >
+                            <option value="">-- Tanlang --</option>
+                            {categories.map(c => (
+                              <option key={c.id} value={c.title}>{c.title}</option>
+                            ))}
+                            <option value="Boshqa / Maxsus mebel">Boshqa / Maxsus mebel</option>
+                          </select>
+                        </div>
+
+                        <div className="sm:col-span-2">
+                          <label className="block text-[10px] font-semibold text-slate-600 mb-1">Qo'shimcha tafsilotlar yoki izoh</label>
+                          <textarea 
+                            rows={2}
+                            placeholder="Mebel o'lchamlari, rangi yoki maxsus talablar..."
+                            value={newManualBooking.message}
+                            onChange={(e) => setNewManualBooking({ ...newManualBooking, message: e.target.value })}
+                            className="w-full bg-white border border-slate-200 rounded-xl p-3 text-xs focus:ring-2 focus:ring-gold-500"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex gap-2 justify-end">
+                        <button 
+                          type="button" 
+                          onClick={() => setShowAddManualBooking(false)}
+                          className="bg-slate-200 hover:bg-slate-350 text-slate-700 font-semibold px-4 py-2 rounded-xl text-xs transition-colors cursor-pointer"
+                        >
+                          Bekor qilish
+                        </button>
+                        <button 
+                          type="submit"
+                          className="bg-slate-900 hover:bg-slate-800 text-white font-semibold px-4 py-2 rounded-xl text-xs transition-colors cursor-pointer"
+                        >
+                          Saqlash
+                        </button>
+                      </div>
+                    </form>
+                  )}
                   
                   {/* Filters Bar */}
                   <div className="flex flex-col sm:flex-row gap-3">
@@ -818,9 +1048,9 @@ export default function AdminPanel({
                 </div>
 
                 {/* Booking Management Panel */}
-                <div className="lg:col-span-5">
+                <div className={`lg:col-span-5 ${!selectedBooking ? 'hidden lg:block' : 'block'}`}>
                   {selectedBooking ? (
-                    <div className="bg-white p-6 rounded-2xl border border-slate-150 shadow-sm space-y-6">
+                    <div className="bg-white p-4 sm:p-6 rounded-2xl border border-slate-150 shadow-sm space-y-6">
                       <div className="flex items-center justify-between border-b border-slate-100 pb-3">
                         <h3 className="font-display font-semibold text-base text-slate-950">Buyurtma Tafsilotlari</h3>
                         <button 
@@ -865,8 +1095,8 @@ export default function AdminPanel({
                         )}
                       </div>
 
-                      {/* Direct Message (Feature 15) */}
-                      <div className="pt-2">
+                      {/* Direct Message & Invoice Download (Feature 15 & 16) */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-2">
                         <a 
                           href={`https://t.me/share/url?url=https://bekmebeli.uz&text=Assalomu%20alaykum%20${encodeURIComponent(selectedBooking.fullName)},%20siz%20Bek%20Mebeli%20do'konimizdan%20${encodeURIComponent(selectedBooking.category)}%20bo'yicha%20buyurtma%20qoldirgan%20edingiz.`}
                           target="_blank"
@@ -874,8 +1104,16 @@ export default function AdminPanel({
                           className="w-full bg-sky-500 hover:bg-sky-600 text-white font-medium py-2.5 px-4 rounded-xl text-xs flex items-center justify-center space-x-2 transition-colors cursor-pointer"
                         >
                           <MessageSquare className="w-4 h-4 text-white" />
-                          <span>Telegram orqali xabar yuborish</span>
+                          <span>Telegram orqali yozish</span>
                         </a>
+
+                        <button 
+                          onClick={() => handleDownloadInvoice(selectedBooking)}
+                          className="w-full bg-slate-900 hover:bg-slate-800 text-white font-medium py-2.5 px-4 rounded-xl text-xs flex items-center justify-center space-x-2 transition-colors cursor-pointer border border-slate-800 shadow-sm"
+                        >
+                          <FileText className="w-4 h-4 text-gold-400" />
+                          <span>Hisob-fakturani yuklash</span>
+                        </button>
                       </div>
 
                       {/* Status Transition triggers (Feature 3) */}
@@ -948,9 +1186,11 @@ export default function AdminPanel({
               <div className="space-y-6">
                 
                 {editingCategory ? (
-                  <form onSubmit={handleSaveCategory} className="bg-white p-6 rounded-2xl border border-slate-150 shadow-sm space-y-6 text-left">
+                  <form onSubmit={handleSaveCategory} className="bg-white p-4 sm:p-6 rounded-2xl border border-slate-150 shadow-sm space-y-6 text-left">
                     <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                      <h3 className="font-display font-semibold text-base text-slate-950">Kategoriyani tahrirlash: {editingCategory.title}</h3>
+                      <h3 className="font-display font-semibold text-base text-slate-950">
+                        {editingCategory.id === '' ? "Yangi Kategoriya / Mahsulot Qo'shish" : "Kategoriyani tahrirlash: " + editingCategory.title}
+                      </h3>
                       <button 
                         type="button"
                         onClick={() => setEditingCategory(null)}
@@ -1074,52 +1314,89 @@ export default function AdminPanel({
                           </li>
                         ))}
                       </ul>
-                    </div>
+                    </div>                    <div className="border-t border-slate-100 pt-4 flex flex-col sm:flex-row gap-3">
+                      <div className="flex gap-3">
+                        <button 
+                          type="submit"
+                          className="bg-slate-900 hover:bg-slate-800 text-white font-semibold px-6 py-3 rounded-xl text-xs transition-colors cursor-pointer"
+                        >
+                          Kategoriyani saqlash
+                        </button>
+                        <button 
+                          type="button"
+                          onClick={() => setEditingCategory(null)}
+                          className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold px-6 py-3 rounded-xl text-xs transition-colors cursor-pointer"
+                        >
+                          Bekor qilish
+                        </button>
+                      </div>
 
-                    <div className="border-t border-slate-100 pt-4 flex gap-3">
-                      <button 
-                        type="submit"
-                        className="bg-slate-900 hover:bg-slate-800 text-white font-semibold px-6 py-3 rounded-xl text-xs transition-colors cursor-pointer"
-                      >
-                        Kategoriyani saqlash
-                      </button>
-                      <button 
-                        type="button"
-                        onClick={() => setEditingCategory(null)}
-                        className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold px-6 py-3 rounded-xl text-xs transition-colors cursor-pointer"
-                      >
-                        Bekor qilish
-                      </button>
+                      {editingCategory.id !== '' && (
+                        <button 
+                          type="button"
+                          onClick={() => handleDeleteCategory(editingCategory.id, editingCategory.title)}
+                          className="bg-rose-50 hover:bg-rose-100 text-rose-600 font-semibold px-6 py-3 rounded-xl text-xs transition-colors cursor-pointer flex items-center justify-center space-x-1.5 sm:ml-auto"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                          <span>Kategoriyani o'chirish</span>
+                        </button>
+                      )}
                     </div>
 
                   </form>
                 ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    {categories.map((c) => (
-                      <div key={c.id} className="bg-white rounded-2xl border border-slate-150 p-5 flex space-x-4 items-start shadow-sm hover:shadow-md transition-shadow">
-                        <img 
-                          src={c.image} 
-                          alt={c.title} 
-                          className="w-20 h-20 rounded-xl object-cover shrink-0"
-                        />
-                        <div className="flex-grow text-left">
-                          <h4 className="font-display font-bold text-base text-slate-900">{c.title}</h4>
-                          <p className="text-[11px] text-slate-400 mt-1 line-clamp-2 leading-relaxed">{c.description}</p>
-                          <div className="mt-4 flex items-center justify-between border-t border-slate-50 pt-3">
-                            <span className="text-[10px] text-gold-600 font-bold bg-gold-50 px-2 py-0.5 rounded-full border border-gold-200">
-                              {c.guarantee}
-                            </span>
-                            <button 
-                              onClick={() => setEditingCategory({ ...c })}
-                              className="text-xs text-slate-900 hover:text-gold-600 font-semibold flex items-center space-x-1"
-                            >
-                              <Edit className="w-3.5 h-3.5" />
-                              <span>Tahrirlash</span>
-                            </button>
+                  <div className="space-y-6">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-4 sm:p-6 rounded-2xl border border-slate-150 shadow-sm">
+                      <div className="text-left">
+                        <h3 className="font-display font-semibold text-base text-slate-950">Mebel Kategoriyalari</h3>
+                        <p className="text-xs text-slate-400 mt-1">Saytda ko'rinadigan barcha mebel turlarini boshqarish va yangilarini qo'shish</p>
+                      </div>
+                      <button 
+                        onClick={() => setEditingCategory({
+                          id: '',
+                          title: '',
+                          description: '',
+                          image: '',
+                          details: '',
+                          items: [],
+                          material: '',
+                          guarantee: '',
+                          duration: ''
+                        })}
+                        className="bg-gold-500 hover:bg-gold-600 text-slate-950 font-semibold py-2.5 px-4 rounded-xl text-xs flex items-center justify-center space-x-2 transition-all cursor-pointer shadow-lg shadow-gold-500/10 shrink-0"
+                      >
+                        <Plus className="w-4 h-4 text-slate-950" />
+                        <span>Yangi Kategoriya Qo'shish</span>
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      {categories.map((c) => (
+                        <div key={c.id} className="bg-white rounded-2xl border border-slate-150 p-4 sm:p-5 flex space-x-4 items-start shadow-sm hover:shadow-md transition-shadow">
+                          <img 
+                            src={c.image} 
+                            alt={c.title} 
+                            className="w-20 h-20 rounded-xl object-cover shrink-0"
+                          />
+                          <div className="flex-grow text-left min-w-0">
+                            <h4 className="font-display font-bold text-base text-slate-900 truncate">{c.title}</h4>
+                            <p className="text-[11px] text-slate-400 mt-1 line-clamp-2 leading-relaxed">{c.description}</p>
+                            <div className="mt-4 flex items-center justify-between border-t border-slate-50 pt-3">
+                              <span className="text-[10px] text-gold-600 font-bold bg-gold-50 px-2 py-0.5 rounded-full border border-gold-200">
+                                {c.guarantee}
+                              </span>
+                              <button 
+                                onClick={() => setEditingCategory({ ...c })}
+                                className="text-xs text-slate-900 hover:text-gold-600 font-semibold flex items-center space-x-1 cursor-pointer"
+                              >
+                                <Edit className="w-3.5 h-3.5" />
+                                <span>Tahrirlash</span>
+                              </button>
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    ))}
+                      ))}
+                    </div>
                   </div>
                 )}
 
@@ -1366,15 +1643,14 @@ export default function AdminPanel({
                 <div className="lg:col-span-5 bg-white p-6 rounded-2xl border border-slate-150 shadow-sm space-y-4 text-left">
                   <h3 className="font-display font-semibold text-base text-slate-950">Yangi Admin tayinlash</h3>
                   <p className="text-xs text-slate-400 leading-relaxed font-light">
-                    Kompaniyaning boshqa dizaynerlari yoki menejerlariga admin huquqini taqdim etish. Foydalanuvchining login qilgan UID va Email kiritilishi zarur.
+                    Kompaniyaning boshqa dizaynerlari yoki menejerlariga admin huquqini taqdim etish. Foydalanuvchining elektron pochtasi yoki shaxsiy UID kodidan birini kiritish kifoya.
                   </p>
                   
                   <form onSubmit={handleAddAdmin} className="space-y-4 pt-2">
                     <div>
-                      <label className="block text-[10px] font-semibold text-slate-700 uppercase mb-1">Admin Emaili</label>
+                      <label className="block text-[10px] font-semibold text-slate-700 uppercase mb-1">Admin Emaili (Majburiy emas, agar UID kiritilsa)</label>
                       <input 
                         type="email" 
-                        required
                         placeholder="Masalan: manager@gmail.com"
                         value={newAdminEmail}
                         onChange={(e) => setNewAdminEmail(e.target.value)}
@@ -1383,17 +1659,16 @@ export default function AdminPanel({
                     </div>
 
                     <div>
-                      <label className="block text-[10px] font-semibold text-slate-700 uppercase mb-1">Foydalanuvchi UID (Google Auth UID)</label>
+                      <label className="block text-[10px] font-semibold text-slate-700 uppercase mb-1">Foydalanuvchi UID (Majburiy emas, agar Email kiritilsa)</label>
                       <input 
                         type="text" 
-                        required
                         placeholder="Foydalanuvchining shaxsiy ID kodi"
                         value={newAdminUid}
                         onChange={(e) => setNewAdminUid(e.target.value)}
                         className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-xs focus:ring-2 focus:ring-gold-500"
                       />
                       <span className="text-[10px] text-slate-400 mt-1 block leading-relaxed">
-                        Yangi admin bo'ladigan xodim avval saytdan kirishi va uning UID kodi sizga ma'lum bo'lishi kerak.
+                        Agar xodim Google orqali kirsa, uning UID kodini yoki oddiy Gmail elektron pochtasini kiritib admin qilishingiz mumkin.
                       </span>
                     </div>
 

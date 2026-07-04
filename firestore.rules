@@ -19,12 +19,17 @@ service cloud.firestore {
     function isAdmin() {
       return isSignedIn() && (
         exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.token.email)) ||
         (request.auth.token.email == "tuyginovsardor@gmail.com" && request.auth.token.email_verified == true)
       );
     }
 
     function isValidId(id) {
       return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidAdminId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-\\.\\@]+$');
     }
 
     function incoming() {
@@ -39,8 +44,9 @@ service cloud.firestore {
     
     function isValidAdmin(data) {
       return data.keys().hasAll(['email', 'assignedAt'])
-        && data.keys().size() <= 3
+        && data.keys().size() <= 5
         && data.email is string && data.email.size() <= 150
+        && (!('uid' in data) || (data.uid is string && data.uid.size() <= 128))
         && (!('assignedBy' in data) || (data.assignedBy is string && data.assignedBy.size() <= 150));
     }
 
@@ -95,7 +101,7 @@ service cloud.firestore {
     // 1. ADMINS COLLECTION
     match /admins/{userId} {
       allow read: if isAdmin();
-      allow create: if isAdmin() && isValidAdmin(incoming()) && isValidId(userId);
+      allow create: if isAdmin() && isValidAdmin(incoming()) && isValidAdminId(userId);
       allow update: if isAdmin() && isValidAdmin(incoming()) 
                      && incoming().email == existing().email; // Immutable Email
       allow delete: if isAdmin() && userId != request.auth.uid; // Prevent deleting oneself

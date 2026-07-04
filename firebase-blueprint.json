@@ -9,6 +9,10 @@
           "type": "string",
           "description": "Email address of the administrator"
         },
+        "uid": {
+          "type": "string",
+          "description": "Auth UID of the administrator"
+        },
         "assignedAt": {
           "type": "string",
           "format": "date-time",

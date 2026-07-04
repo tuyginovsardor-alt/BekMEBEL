@@ -139,9 +139,16 @@ export default function App() {
         const primaryAdmin = currentUser.email === "tuyginovsardor@gmail.com";
         let inAdminsCol = false;
         try {
+          // 1. Check by UID first
           const adminDoc = await getDoc(doc(db, 'admins', currentUser.uid));
           if (adminDoc.exists()) {
             inAdminsCol = true;
+          } else if (currentUser.email) {
+            // 2. Check by lowercase email as document ID
+            const emailDoc = await getDoc(doc(db, 'admins', currentUser.email.toLowerCase()));
+            if (emailDoc.exists()) {
+              inAdminsCol = true;
+            }
           }
         } catch (e) {
           console.error("Admin check error:", e);
