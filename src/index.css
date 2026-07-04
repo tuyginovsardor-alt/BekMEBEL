@@ -1,0 +1,53 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-display: "Playfair Display", Georgia, Cambria, "Times New Roman", Times, serif;
+  
+  --color-gold-50: #fdfaf2;
+  --color-gold-100: #faf1db;
+  --color-gold-200: #f2decb;
+  --color-gold-300: #e2c092;
+  --color-gold-400: #d19e5d;
+  --color-gold-500: #c2843d; /* Luxury Accent Gold */
+  --color-gold-600: #a3692a;
+  --color-gold-700: #824f1e;
+  --color-gold-800: #613813;
+  --color-gold-900: #42230a;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+/* Custom styles for high-fidelity luxury appearance */
+.gold-gradient-text {
+  background: linear-gradient(135deg, #e2c092 0%, #c2843d 50%, #824f1e 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.gold-gradient-bg {
+  background: linear-gradient(135deg, #c2843d 0%, #a3692a 100%);
+}
+
+.gold-gradient-bg-hover {
+  background: linear-gradient(135deg, #d19e5d 0%, #c2843d 100%);
+}
+
+/* Custom scrollbar to keep it premium */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+}
+::-webkit-scrollbar-thumb {
+  background: #c2843d;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #a3692a;
+}
+

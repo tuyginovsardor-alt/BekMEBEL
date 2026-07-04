@@ -1,0 +1,6 @@
+{
+  "name": "Bek Mebeli",
+  "description": "Toshkentdagi zamonaviy va sifatli mebellar do'koni. Uyingiz uchun shinamlik va hashamatli dizayn.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
